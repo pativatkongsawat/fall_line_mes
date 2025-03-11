@@ -1,7 +1,13 @@
 import cv2
 import mediapipe as mp
+import numpy as np
 import requests
 from collections import deque
+from tensorflow.keras.models import load_model
+
+
+model = load_model("lstm_fall_detection.h5")
+
 
 mp_pose = mp.solutions.pose
 pose = mp_pose.Pose(min_detection_confidence=0.8, min_tracking_confidence=0.8)
@@ -11,21 +17,12 @@ SEQUENCE_LENGTH = 30
 sequence = deque(maxlen=SEQUENCE_LENGTH)
 
 cap = cv2.VideoCapture(0)
-
 fall_detected = False
-API_URL = "http://127.0.0.1:8000/alert_fall"  
+API_URL = "http://127.0.0.1:8000/alert_fall"
 
-def detect_fall(landmarks):
-    global fall_detected
-    if not landmarks:
-        return False
-
-    nose_y = landmarks[0].y
-    hip_y = (landmarks[23].y + landmarks[24].y) / 2  
-
-    if nose_y > hip_y:  
-        return True
-    return False
+def extract_landmarks(landmarks):
+    """ ดึงค่า x, y ของจุดสำคัญที่เลือก """
+    return np.array([[landmarks[i].x, landmarks[i].y] for i in SELECTED_LANDMARKS]).flatten()
 
 while cap.isOpened():
     ret, frame = cap.read()
@@ -40,17 +37,25 @@ while cap.isOpened():
             frame, results.pose_landmarks, mp_pose.POSE_CONNECTIONS
         )
 
-        if detect_fall(results.pose_landmarks.landmark):
-            if not fall_detected:
-                print("🚨 ตรวจพบการล้ม! ส่งแจ้งเตือน...")
-                try:
-                    requests.post(API_URL)
-                except Exception as e:
-                    print("❌ ไม่สามารถส่งแจ้งเตือนได้:", e)
+       
+        landmarks_array = extract_landmarks(results.pose_landmarks.landmark)
+        sequence.append(landmarks_array)
 
-                fall_detected = True  
-        else:
-            fall_detected = False  
+      
+        if len(sequence) == SEQUENCE_LENGTH:
+            input_data = np.expand_dims(np.array(sequence), axis=0)  
+            prediction = model.predict(input_data)[0]  
+
+            if prediction[0] > 0.5:  
+                if not fall_detected:
+                    print("🚨 ตรวจพบการล้ม! ส่งแจ้งเตือน...")
+                    try:
+                        requests.post(API_URL)
+                    except Exception as e:
+                        print("❌ ไม่สามารถส่งแจ้งเตือนได้:", e)
+                    fall_detected = True  
+            else:
+                fall_detected = False  
 
     cv2.imshow('Fall Detection', frame)
 
